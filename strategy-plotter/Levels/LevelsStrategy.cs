@@ -11,7 +11,7 @@
         double _levelRange = 0.1; // Level depth in % of price change
         double _maxLevelBudget = 0.1;
         //double _levelRangeOverlap = 0.01; // Overlap of multiple levels
-        double _initialBetDistance = 0.25;
+        double _initialBetDistance = 0.5;
         int _mitigationLevel = 3; // From which level to start mitigate position
         double _mitigationStrength = 1; // 0-100% of normalized profit to use to cover for position on higher levels
 
@@ -19,7 +19,11 @@
         {
             return new LevelsStrategy
             {
-
+                _levelRange = chromosome.LevelRange,
+                _maxLevelBudget = chromosome.MaxLevelBudget,
+                _initialBetDistance = chromosome.InitialBetDistance,
+                _mitigationLevel = chromosome.MitigationLevel,
+                _mitigationStrength = chromosome.MitigationStrength
             };
         }
 
