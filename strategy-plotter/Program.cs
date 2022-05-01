@@ -220,7 +220,6 @@ double Evaluate<T>(ICollection<double> prices, GenTradesRequest genTrades, IStra
 
     // init strategy if needed
     strategy.OnTrade(prices.First(), 0, 0, currency);
-
     foreach (var p in prices) //todo rev ... not needed for now
     {
         tradableCurrency = currency - budgetExtra;
@@ -249,8 +248,17 @@ double Evaluate<T>(ICollection<double> prices, GenTradesRequest genTrades, IStra
 
         if (Math.Abs(cost) < minOrderCost)
         {
-            cost = minOrderCost * Math.Sign(cost);
-            size = cost / price;
+            if (cost < 0)
+            {
+                // Do not sell more that the strategy wants
+                cost = size = 0;
+            }
+            else
+            {
+                // Buy at least minimal size
+                cost = minOrderCost * Math.Sign(cost);
+                size = cost / price;
+            }
         }
 
         if (cost > tradableCurrency)

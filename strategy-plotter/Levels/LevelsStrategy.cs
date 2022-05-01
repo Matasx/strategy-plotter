@@ -8,11 +8,11 @@
         private readonly List<Level> _levels = new();
 
         // Settings
-        double _levelRange = 0.1; // Level depth in % of price change
+        double _levelRange = 0.05; // Level depth in % of price change
+        double _maxLevelBudget = 0.1;
         //double _levelRangeOverlap = 0.01; // Overlap of multiple levels
         double _initialBetDistance = 0.25;
-        int _maxLevels = 10; // Distribution of budget
-        int _mitigationLevel = 5; // From which level to start mitigate position
+        int _mitigationLevel = 2; // From which level to start mitigate position
         double _mitigationStrength = 1; // 0-100% of normalized profit to use to cover for position on higher levels
 
         public IStrategyPrototype<LevelsStrategyChromosome> CreateInstance(LevelsStrategyChromosome chromosome)
@@ -67,10 +67,10 @@
         public double GetSize(double price, double dir, double asset, double budget, double currency)
         {
             double size;
-            var levelSize = budget / _maxLevels;
+            var levelBudget = budget * _maxLevelBudget;
             if (!_levels.Any())
             {
-                size = levelSize * _initialBetDistance;
+                size = levelBudget * _initialBetDistance;
 
                 // need to indicate sell in case the price grows, but we need to buy
                 if (dir != 0 && Math.Sign(dir) != Math.Sign(size)) size *= -1;
@@ -81,32 +81,25 @@
                 if (candidates.Any())
                 {
                     var match = candidates.FirstOrDefault(x => price < x.Anchor);
-                    size = match == null ? 0 : Math.Max(0d, match.Asset + (levelSize * ((price - match.Anchor) / match.Anchor)));
+                    size = match == null ? 0 : Math.Max(0d, (levelBudget / (match.Anchor - match.Range.Min) * (match.Anchor - price)) - match.Asset);
                 }
                 else
                 {
-                    if (_levels.Count == _maxLevels)
+                    // Insert new level
+                    var bottom = _levels.LastOrDefault(x => price < x.Range.Min);
+                    if (bottom == null)
                     {
-                        size = 0;
+                        size = 0; // do not buy on higher level
                     }
                     else
                     {
-                        // Insert new level
-                        var bottom = _levels.LastOrDefault(x => price < x.Range.Min);
-                        if (bottom == null)
+                        var min = bottom.Range.Min;
+                        while (price < min)
                         {
-                            size = 0; // do not buy on higher level
+                            min /= 1 + _levelRange;
                         }
-                        else
-                        {
-                            var min = bottom.Range.Min;
-                            while (price < min)
-                            {
-                                min /= 1 + _levelRange;
-                            }
-                            var anchor = min * (1 + (_levelRange * 0.5d));
-                            size = price >= anchor ? 0 : -levelSize * ((price - anchor) / anchor);
-                        }
+                        var anchor = min * (1 + (_levelRange * 0.5d));
+                        size = price >= anchor ? 0 : -levelBudget * ((price - anchor) / anchor);
                     }
                 }
             }
@@ -136,7 +129,7 @@
                     if (bottom == null)
                     {
                         // new level: anchor should be at [_initialBetDistance %] above current price
-                        var anchor = price * (1 + _initialBetDistance);
+                        var anchor = price * (1 + (_initialBetDistance * _levelRange * 0.5));
                         var min = anchor / ((_levelRange * 0.5) + 1);
                         var max = min * (1 + _levelRange);
                         _levels.Insert(0, new Level(anchor, new Range(min, max), price * size, price, size));
@@ -152,15 +145,15 @@
                             min /= 1 + _levelRange;
                         }
                         var anchor = min * (1 + (_levelRange * 0.5d));
-                        _levels.Insert(index, new Level(anchor, new Range(min, max), price * size, price, size));
+                        _levels.Insert(index + 1, new Level(anchor, new Range(min, max), price * size, price, size));
                     }
                 }
                 else
                 {
                     var ep = level.Ep + price * size;
                     var newAsset = level.Asset + size;
-                    _levels[_levels.IndexOf(level)] = level with 
-                    { 
+                    _levels[_levels.IndexOf(level)] = level with
+                    {
                         Asset = newAsset,
                         Ep = ep,
                         Enter = ep / newAsset
@@ -171,38 +164,51 @@
             {
                 // Sell
                 var remainingSize = -size;
+                var first = _levels.FirstOrDefault(x => price >= x.Anchor);
                 foreach (var level in _levels.Where(x => price >= x.Anchor).Reverse().ToList())
                 {
                     var currentSize = Math.Min(level.Asset, remainingSize);
+                    var profit = (price - level.Enter) * currentSize * _mitigationStrength;
 
-                    if (_levels.IndexOf(level) >= _mitigationLevel)
+                    Level toRedistribute = null;
+                    while (profit > 0 && (toRedistribute = _levels.FirstOrDefault(x => price < x.Range.Min)) != null
+                        && _levels.IndexOf(level) >= _mitigationLevel)
                     {
-                        var profit = (price - level.Enter) * currentSize * _mitigationStrength;
-                        
-                        Level toRedistribute = null;
-                        while (profit > 0 && (toRedistribute = _levels.FirstOrDefault(x => price < x.Range.Min)) != null)
+                        var belowAnchor = toRedistribute.Anchor / (1 + _levelRange);
+                        if (belowAnchor < first.Range.Max)
                         {
-                            var belowAnchor = toRedistribute.Anchor / (1 + _levelRange);
-                            var diffPrice = toRedistribute.Enter - belowAnchor;
-                            var assetsToCover = profit / diffPrice;
-                            var covered = Math.Min(assetsToCover, toRedistribute.Asset);
+                            // Do not redistribute levels below current price
+                            break;
+                        }
+
+                        var diffPrice = toRedistribute.Enter - belowAnchor;
+                        var coverableAssets = profit / diffPrice;
+                        var covered = Math.Min(coverableAssets, toRedistribute.Asset);                        
+
+                        OnTrade(belowAnchor, asset, covered, currency);
+
+                        if (coverableAssets >= toRedistribute.Asset)
+                        {
                             profit -= diffPrice * covered;
-
-                            OnTrade(belowAnchor, asset, covered, currency);
-
-                            if (assetsToCover > toRedistribute.Asset)
+                            _levels.Remove(toRedistribute);
+                        }
+                        else
+                        {
+                            var newAsset = toRedistribute.Asset - covered;
+                            var ep = toRedistribute.Ep / toRedistribute.Asset * newAsset;
+                            _levels[_levels.IndexOf(toRedistribute)] = toRedistribute with
                             {
-                                _levels.Remove(toRedistribute);
-                            }
-                            else
-                            {
-                                break;
-                            }
+                                Asset = newAsset,
+                                Ep = ep,
+                                Enter = ep / newAsset
+                            };
+                            break;
                         }
                     }
 
                     if (remainingSize >= level.Asset)
                     {
+                        remainingSize -= currentSize;
                         _levels.Remove(level);
                     }
                     else
@@ -217,8 +223,6 @@
                         };
                         break;
                     }
-
-                    remainingSize -= currentSize;
                 }
             }
         }
