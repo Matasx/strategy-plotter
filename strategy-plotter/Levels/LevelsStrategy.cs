@@ -8,11 +8,11 @@
         private readonly List<Level> _levels = new();
 
         // Settings
-        double _levelRange = 0.05; // Level depth in % of price change
+        double _levelRange = 0.1; // Level depth in % of price change
         double _maxLevelBudget = 0.1;
         //double _levelRangeOverlap = 0.01; // Overlap of multiple levels
         double _initialBetDistance = 0.25;
-        int _mitigationLevel = 2; // From which level to start mitigate position
+        int _mitigationLevel = 3; // From which level to start mitigate position
         double _mitigationStrength = 1; // 0-100% of normalized profit to use to cover for position on higher levels
 
         public IStrategyPrototype<LevelsStrategyChromosome> CreateInstance(LevelsStrategyChromosome chromosome)
@@ -89,7 +89,15 @@
                     var bottom = _levels.LastOrDefault(x => price < x.Range.Min);
                     if (bottom == null)
                     {
-                        size = 0; // do not buy on higher level
+                        //size = 0; // do not buy on higher level
+                        var top = _levels.First();
+                        var max = top.Range.Max;
+                        while (price > max)
+                        {
+                            max *= 1 + _levelRange;
+                        }
+                        var anchor = max / (1 + (_levelRange * 0.5d));
+                        size = price >= anchor ? 0 : -levelBudget * ((price - anchor) / anchor);
                     }
                     else
                     {
